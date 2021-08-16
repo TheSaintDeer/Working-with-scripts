@@ -1,0 +1,104 @@
+#!/bin/bash
+
+export POSIXLY_CORRECT=yes
+export LC_NUMERIC=en_US.UTF-8
+
+#function for discharging help
+function fhelp {
+	echo "tradelog [-h|--help] [FILTR] [PŘÍKAZ] [LOG [LOG2 [...]]"
+	echo ""
+	echo "PŘÍKAZ"
+	echo "   list-tick   –  výpis seznamu vyskytujících se burzovních symbolů, tzv. “tickerů”"
+	echo "   profit      –  výpis celkového zisku z uzavřených pozic"
+	echo "   pos         –  výpis hodnot aktuálně držených pozic seřazených sestupně dle hodnoty"
+	echo "   last-price  –  výpis poslední známé ceny pro každý ticker"
+	echo "   hist-ord    –  výpis histogramu počtu transakcí dle tickeru"
+	echo "   graph-pos   –  výpis grafu hodnot držených pozic dle tickeru"
+	echo "FILTR"
+	echo "   -a DATETIME –  after : jsou uvažovány pouze záznamy PO tomto datu (bez tohoto data). DATETIME je formátu YYYY-MM-DD HH:MM:SS"
+	echo "   -b DATETIME –  before : jsou uvažovány pouze záznamy PŘED tímto datem"
+	echo "   -t TICKER   –  jsou uvažovány pouze záznamy odpovídající danému tickeru. Při více výskytech přepínače se bere množina všech uvedených tickerů"
+	echo "   -w WIDTH    –  u výpisu grafů nastavuje jejich šířku, tedy délku nejdelšího řádku na WIDTH"
+}
+
+WIDTH=0                            #variable for the width of the plot
+FILE=""                            #variable for files
+GZIP=""                            #variable for compressed files
+COMMAND=""                         #variable for orders
+FILTR=""                           #variable for filters
+TICKET=""                          #variable for tickers
+DATA_A="0000-01-01 00:00:00"       #date for function -a
+DATA_B="9999-12-31 24:60:60"       #date for function -b
+
+#loop to run through all keys
+while [ -n "$1" ];
+do 
+	#working with parameters
+	case "$1" in
+		-h) fhelp
+	            exit 0;;
+	    --help) fhelp
+		    exit 0;;
+	 list-tick) COMMAND="${COMMAND} | awk -F ';' '{print \$2}' | sort -u"
+	            ;; 
+	    profit) COMMAND="${COMMAND} | awk -F ';' '{if(\$3 == \"sell\") {temp+=\$4*\$6} else {temp-=\$4*\$6}} END {printf \"%.2f\\n\", temp}'" 
+		    ;;
+	       pos) COMMAND="${COMMAND} | awk -F ';' '{print \$1, \$2, \$3, \$4, \$6}' | sort -k 2 -r | sort -k 3,3 -s | awk -v ticker=\"\" -v price=0 -v count=0 '{if(count == 0) {ticker=\$3; price=\$5}; if(ticker != \$3) {printf \"%-9s : %11.2f\\n\", ticker, (price*count); ticker=\$3; count=0; price=\$5}; if(\$4 == \"buy\") {count+=\$6} else {count-=\$6}} END {printf \"%-9s : %11.2f\\n\", ticker, (price*count)}' | sort -nk 3,3 -r"
+		    ;;
+        last-price) COMMAND="${COMMAND} | awk -F';' '{print \$1, \$2, \$4}' | sort -k 2 -r | sort -k 3,3 -s | awk -v ticker=\"\" '{if(ticker != \$3) {ticker=\$3; printf \"%-9s : %7.2f\\n\", \$3, \$4}}'"
+		    ;;
+          hist-ord) if [[ $WIDTH -eq 0 ]]
+	            then
+			    let WIDTH=1
+	            fi
+
+		    COMMAND="${COMMAND} | awk -F ';' '{print \$2}' | sort | awk -v w=\"\$WIDTH\" '{if(check != \$1) {ticker[check]+=(count/w - 0.5); check=\$1; count=0}; ticker[\$1]; count+=1} END {ticker[check]+=(count/w - 0.5); for (i in ticker) print i, ticker[i]}' | sort | sed '1d' | awk '{printf \"%-9s :\", \$1; if(\$2 >= 0.5) {printf \" \"; for(i=0; i <= (\$2-0.5); i++) {printf \"#\"}}; printf \"\\n\"}'" 
+		    ;;
+         graph-pos) if [[ $WIDTH -eq 0 ]]
+                    then
+                            let WIDTH=1000
+                    fi
+
+		    COMMAND="${COMMAND} | awk -F ';' '{print \$1, \$2, \$3, \$4, \$6}' | sort -k 2 -r | sort -k 3,3 -s | awk -v ticker=\"\" -v price=0 -v count=0 '{if(count == 0) {ticker=\$3; price=\$5}; if(ticker != \$3) {printf \"%-9s %11.2f\\n\", ticker, (price*count); ticker=\$3; count=0; price=\$5}; if(\$4 == \"buy\") {count+=\$6} else {count-=\$6}} END {printf \"%-9s %11.2f\n\", ticker, (price*count)}' | awk -v max=0 -v temp=0 -v w=\"\$WIDTH\" '{if(\$2 < 0) {temp=-\$2} else {temp=\$2}; if(temp > max) {max=temp}; tot[\$1]+=\$2} END {sign=\"#\"; for(i in tot) {printf \"%-9s :\", i; if(tot[i] < 0) {sign=\"!\"; tot[i]*=-1} else {sign=\"#\"}; for(j=(tot[i]); j >= max/w; j-=max/w) {printf \"%s\", sign}; printf \"\n\" }}' | sort -k 1,1"
+		    ;;
+	        -a) if [[ "$2" =~ [0-9][0-9][0-9][0-9]-[0-1][0-9]-[0-3][0-9]\ +[0-2][0-9]:[0-6][0-9]:[0-6][0-9] ]]
+                    then 
+	                    DATA_A="$2"
+			    shift
+		    fi 
+		    FILTR="${FILTR} | awk -F ';' -v temp=\"\$DATA_A\" '{if(\$1 > temp) {print \$0}}'"
+	            ;;
+	        -b) if [[ "$2" =~ [0-9][0-9][0-9][0-9]-[0-1][0-9]-[0-3][0-9]\ +[0-2][0-9]:[0-6][0-9]:[0-6][0-9] ]]
+                    then
+                            DATA_B="$2"
+                            shift
+                    fi
+                    FILTR="${FILTR} | awk -F ';' -v temp=\"\$DATA_B\" '{if(\$1 < temp) {print \$0}}'"
+		    ;;
+	        -t) TICKET="${TICKET}|;$2;" 
+		    shift
+		    ;;
+	        -w) let WIDTH=$2
+	            shift
+	            ;;
+		 *) if [[ "$1" =~ \.log\.gz ]]
+		    then
+		        GZIP="${GZIP} $1"
+		    elif [[ "$1" =~ \.log ]]
+                    then
+                        FILE="${FILE} $1"
+                    fi
+	            ;;
+	esac
+	shift
+done
+
+TICKET=${TICKET:1}                                 #remove the extra part
+FILTR_T="| grep -E '$TICKET'"                      #we prepare tickers, if necessary, if not, then this will not affect in any way
+READ_FILE="gzip -d -c -q $GZIP | cat $FILE -"      #preparing reading from all necessary files
+if [ "$GZIP $FILE" == " " ];
+then
+	READ_FILE="awk '{print \$0}'"
+	FILTR_T=""
+fi
+eval "$READ_FILE $FILTR_T $FILTR $COMMAND"         #the final line, where we connect reading from files, filters and commands
